@@ -14,6 +14,7 @@ export interface Profile {
   encrypted_private_key?: string | null;
   email?: string | null;
   phone?: string | null;
+  password_hash?: string | null;
   notifications: string;  // JSON
   created_at: string;
   updated_at: string;
@@ -53,4 +54,5 @@ export interface Contact {
 // Env binding
 export interface Env {
   DATABASE: D1Database;
+  JWT_SECRET: string;
 }

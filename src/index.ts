@@ -3,7 +3,8 @@ import { logger } from 'hono/logger';
 import { cors } from 'hono/cors';
 import type { Env } from './db/schema';
 
-import authRoutes from './routes/profile';
+import authRoutes from './routes/auth';
+import profileRoutes from './routes/profile';
 import walletRoutes from './routes/wallet';
 import { authMiddleware } from './middleware/auth';
 
@@ -28,7 +29,8 @@ app.get('/tables', async (c) => {
 });
 
 // API routes
-app.route('/api/profile', authRoutes);
+app.route('/api/auth', authRoutes);
+app.route('/api/profile', profileRoutes);
 app.route('/api/wallet', walletRoutes);
 
 app.onError((err, c) => {

@@ -1,52 +1,23 @@
-/**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
- */
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "cryo-worker",
-	"main": "src/index.ts",
-	"compatibility_date": "2026-03-10",
-	"observability": {
-		"enabled": true
-	},
-	"upload_source_maps": true,
-	"compatibility_flags": [
-		"nodejs_compat"
-	],
-	"d1_databases": [
-		{
-			"binding": "DATABASE",
-			"database_name": "cryo-db",
-			"database_id": "8a7a9327-5cb2-40fb-ae93-73c6891851d5",
-			"remote": true
-		}
-	]
-	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": {  "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables - Add JWT_SECRET via `wrangler secret put JWT_SECRET`
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": { "JWT_SECRET": "prod-only-non-sensitive" },
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+  "$schema": "https://static.cloudflare.com/pages-framework/packages/wrangler-cli/dist/configuration-schema.json",
+  "name": "cryo-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "d1_databases": [
+    {
+      "binding": "DATABASE",
+      "database_name": "cryo-db",
+      "database_id": "8a7a9327-5cb2-40fb-ae93-73c6891851d5"
+    }
+  ],
+  "vars": {
+    "JWT_SECRET": "dev-temp-secret-change-for-prod"
+  }
 }

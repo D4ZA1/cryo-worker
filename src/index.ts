@@ -1,29 +1,30 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
-
+import { Hono } from 'hono';
+import { logger } from 'hono/logger';
+import { cors } from 'hono/cors';
 import type { Env } from './db/schema';
 
-export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
-		// Test D1 connection after schema
-		try {
-			const { results } = await env.DATABASE.prepare('SELECT name FROM sqlite_master WHERE type=\\\'table\\\';').all();
-			const tables = results.map((r: any) => r.name);
-			return new Response(JSON.stringify({ status: 'D1 connected', tables }), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (e: any) {
-			return new Response(`DB Error: ${e.message}`, { status: 500 });
-		}
-	},
-} satisfies ExportedHandler<Env>;
+import authRoutes from './routes/profile';
+import walletRoutes from './routes/wallet';
+import { authMiddleware } from './middleware/auth';
+
+const app = new Hono<{ Bindings: Env }>();
+
+app.use('*', logger());
+app.use('*', cors());
+
+app.get('/', async (c) => {
+  const { results } = await c.env.DATABASE.prepare('SELECT name FROM sqlite_master WHERE type=\'table\';').all();
+  const tables = results.map((r: any) => r.name);
+  return c.json({ status: 'Worker ready', tables });
+});
+
+// API routes
+app.route('/api/profile', authRoutes);
+app.route('/api/wallet', walletRoutes);
+
+app.onError((err, c) => {
+  console.error(err);
+  return c.json({ error: err.message }, 500);
+});
+
+export default app;

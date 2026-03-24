@@ -34,12 +34,11 @@
 	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
 	 */
 	/**
-	 * Environment Variables
+	 * Environment Variables - Add JWT_SECRET via `wrangler secret put JWT_SECRET`
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
 	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
+	// "vars": { "JWT_SECRET": "prod-only-non-sensitive" },
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

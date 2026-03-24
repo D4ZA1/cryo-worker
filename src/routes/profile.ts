@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import type { Env } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireUser } from '../middleware/auth';
 
 const app = new Hono<{ Bindings: Env; Variables: { userId: string } }>();
 
-app.post('/create-profile-wallet', authMiddleware, async (c) => {
+app.post('/create-profile-wallet', authMiddleware, requireUser, async (c) => {
   const body = await c.req.json();
   const userId = c.get('userId');
   const { first_name, last_name, public_key, encrypted_private_key, email, phone } = body;
@@ -36,7 +36,7 @@ app.post('/create-profile-wallet', authMiddleware, async (c) => {
 
     return c.json({ ok: true, message: 'Profile and wallet created/updated' });
   } catch (error) {
-    return c.json({ error: error.message }, 500);
+    return c.json({ error: (error as Error).message }, 500);
   }
 });
 

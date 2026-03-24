@@ -18,6 +18,15 @@ app.get('/', async (c) => {
   return c.json({ status: 'Worker ready', tables });
 });
 
+// Health check
+app.get('/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// List tables
+app.get('/tables', async (c) => {
+  const { results } = await c.env.DATABASE.prepare("SELECT name FROM sqlite_master WHERE type='table';").all();
+  return c.json({ tables: results.map((r: any) => r.name) });
+});
+
 // API routes
 app.route('/api/profile', authRoutes);
 app.route('/api/wallet', walletRoutes);

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../db/schema';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, requireUser } from '../middleware/auth';
 
 function b64ToBuf(b64: string): ArrayBuffer {
   const bin = atob(b64);
@@ -12,7 +12,7 @@ function b64ToBuf(b64: string): ArrayBuffer {
 
 const app = new Hono<{ Bindings: Env; Variables: { userId: string } }>();
 
-app.post('/verify-wallet', authMiddleware, async (c) => {
+app.post('/verify-wallet', authMiddleware, requireUser, async (c) => {
   const body = await c.req.json();
   const { public_key, challenge, signature } = body;
   const userId = c.get('userId');

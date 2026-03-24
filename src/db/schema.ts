@@ -1,0 +1,56 @@
+/// <reference types="@cloudflare/workers-types" />
+
+/**
+ * D1 Schema Types for cryo-db
+ * Generated from migrations/0001_initial_schema.sql
+ * Run `wrangler types` after binding changes.
+ */
+
+export interface Profile {
+  id: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  public_key?: string | null;
+  encrypted_private_key?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  notifications: string;  // JSON
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Wallet {
+  user_id: string;
+  public_key?: string | null;
+  encrypted_private_key?: string | null;
+  verified: number;  // 0/1
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Block {
+  id: number;
+  data?: string | null;
+  previous_hash?: string | null;
+  hash?: string | null;
+  created_at: string;
+  user_id?: string | null;
+}
+
+export interface Contact {
+  id: number;
+  user_id: string;
+  contact_user_id?: string | null;
+  name: string;
+  address: string;
+  email?: string | null;
+  label?: string | null;
+  public_key?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Env binding
+export interface Env {
+  DATABASE: D1Database;
+}

@@ -13,6 +13,14 @@
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
+	],
+	"d1_databases": [
+		{
+			"binding": "DATABASE",
+			"database_name": "cryo-db",
+			"database_id": "8a7a9327-5cb2-40fb-ae93-73c6891851d5",
+			"remote": true
+		}
 	]
 	/**
 	 * Smart Placement

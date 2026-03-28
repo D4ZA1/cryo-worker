@@ -1,45 +1,125 @@
 import { Hono } from 'hono';
 import type { Env } from '../db/schema';
 import { authMiddleware, requireUser } from '../middleware/auth';
-// Use WebCrypto PBKDF2 instead of node crypto for pure Workers compat
-// PBKDF2 slow but secure
+import { RegisterInputSchema, LoginInputSchema, MfaLoginInputSchema } from '../schemas';
+import { ErrorCode, HTTP_STATUS, VALIDATION } from '../constants';
+// Use WebCrypto for Workers compatibility
+// PBKDF2 with WebCrypto
 
 const app = new Hono<{ Bindings: Env; Variables: { userId: string } }>();
 
-// Helper: PBKDF2 hash (salt stored in hash)
-function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha256').toString('hex');
-  return `${salt}:${hash}`;
+// Helper: PBKDF2 hash using WebCrypto
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const encoder = new TextEncoder();
+  const passwordBuffer = encoder.encode(password);
+  
+  // Import password as key
+  const passwordKey = await crypto.subtle.importKey(
+    'raw',
+    passwordBuffer,
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  
+  // Derive bits
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    passwordKey,
+    64 * 8
+  );
+  
+  const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('');
+  const hashHex = Array.from(new Uint8Array(derivedBits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${saltHex}:${hashHex}`;
 }
 
 // Helper: Verify password against hash
-function verifyPassword(password: string, hash: string): boolean {
-  const [salt, expectedHash] = hash.split(':');
-  const hashBuffer = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha256').toString('hex');
-  return hashBuffer === expectedHash;
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  const [saltHex, expectedHash] = hash.split(':');
+  const salt = new Uint8Array(saltHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+  const encoder = new TextEncoder();
+  const passwordBuffer = encoder.encode(password);
+  
+  const passwordKey = await crypto.subtle.importKey(
+    'raw',
+    passwordBuffer,
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    passwordKey,
+    64 * 8
+  );
+  
+  const hashHex = Array.from(new Uint8Array(derivedBits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex === expectedHash;
 }
 
-// POST /register - email/password → profile + hash + temp JWT
+// POST /register - email/password → profile + hash + wallet + temp JWT
 app.post('/register', async (c) => {
   const body = await c.req.json();
-  const { email, password, first_name, last_name } = body;
-  if (!email || !password || !first_name) {
-    return c.json({ error: 'Missing fields' }, 400);
+  
+  // Validate input using Zod schema
+  const parseResult = RegisterInputSchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json({ ok: false, error: parseResult.error.message, code: ErrorCode.VALIDATION_ERROR }, HTTP_STATUS.BAD_REQUEST);
   }
+  const { email, password, first_name, last_name, public_key, encrypted_private_key } = parseResult.data;
 
   try {
-    const passwordHash = hashPassword(password);
+    // Check if email already exists
+    const existingUser = await c.env.DATABASE.prepare(
+      `SELECT id FROM profiles WHERE email = ?`
+    ).bind(email).first();
+
+    if (existingUser) {
+      return c.json({ ok: false, error: 'Email already registered', code: ErrorCode.EMAIL_EXISTS }, HTTP_STATUS.CONFLICT);
+    }
+
+    const passwordHash = await hashPassword(password);
     const userId = crypto.randomUUID();
+    
+    // Insert profile with optional key fields
     await c.env.DATABASE.prepare(`
-      INSERT INTO profiles (id, email, first_name, last_name, password_hash)
-      VALUES (?, ?, ?, ?, ?)
-    `).bind(userId, email, first_name, last_name || null, passwordHash).run();
+      INSERT INTO profiles (id, email, first_name, last_name, password_hash, public_key, encrypted_private_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(userId, email, first_name, last_name || null, passwordHash, public_key || null, encrypted_private_key || null).run();
+
+    // Create wallet entry for the user (with keys if provided)
+    await c.env.DATABASE.prepare(`
+      INSERT INTO wallets (user_id, public_key, encrypted_private_key, verified)
+      VALUES (?, ?, ?, 0)
+    `).bind(userId, public_key || null, encrypted_private_key || null).run();
 
     // Generate JWT (simple, exp 7d)
     const token = await jwtSign({ sub: userId, email }, c.env.JWT_SECRET!, { exp: Math.floor(Date.now() / 1000) + 60*60*24*7 });
 
-    return c.json({ ok: true, token, userId });
+    // Return token and user data
+    return c.json({ 
+      ok: true, 
+      token, 
+      user: {
+        id: userId,
+        email,
+        first_name: first_name,
+        last_name: last_name,
+      }
+    });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 500);
   }
@@ -48,23 +128,40 @@ app.post('/register', async (c) => {
 // POST /login - email/password → JWT if match
 app.post('/login', async (c) => {
   const body = await c.req.json();
-  const { email, password } = body;
+  
+  // Validate input using Zod schema
+  const parseResult = LoginInputSchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json({ ok: false, error: parseResult.error.message, code: ErrorCode.VALIDATION_ERROR }, HTTP_STATUS.BAD_REQUEST);
+  }
+  const { email, password } = parseResult.data;
 
   try {
-    const { results } = await c.env.DATABASE.prepare('SELECT id, password_hash FROM profiles WHERE email = ?').bind(email).all();
+    const { results } = await c.env.DATABASE.prepare('SELECT id, first_name, last_name, email, password_hash FROM profiles WHERE email = ?').bind(email).all();
     if (results.length === 0) {
-      return c.json({ error: 'Invalid credentials' }, 401);
+      return c.json({ ok: false, error: 'Invalid credentials', code: ErrorCode.INVALID_CREDENTIALS }, HTTP_STATUS.UNAUTHORIZED);
     }
 
     const user = results[0] as any;
-    if (!verifyPassword(password, user.password_hash)) {
-      return c.json({ error: 'Invalid credentials' }, 401);
+    const isValid = await verifyPassword(password, user.password_hash);
+    if (!isValid) {
+      return c.json({ ok: false, error: 'Invalid credentials', code: ErrorCode.INVALID_CREDENTIALS }, HTTP_STATUS.UNAUTHORIZED);
     }
 
     // Generate JWT
     const token = await jwtSign({ sub: user.id, email }, c.env.JWT_SECRET!, { exp: Math.floor(Date.now() / 1000) + 60*60*24*7 });
 
-    return c.json({ ok: true, token });
+    // Return token and user data
+    return c.json({ 
+      ok: true, 
+      token, 
+      user: {
+        id: user.id,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+      }
+    });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 500);
   }
@@ -78,6 +175,379 @@ app.post('/refresh', authMiddleware, requireUser, async (c) => {
 });
 
 // POST /logout - stateless, client clear token
+
+// POST /send-otp - send magic link to email (for email verification)
+app.post('/send-otp', async (c) => {
+  const body = await c.req.json();
+  const { email } = body;
+  if (!email) {
+    return c.json({ error: 'Missing email' }, 400);
+  }
+
+  try {
+    // Check if user exists
+    const { results } = await c.env.DATABASE.prepare('SELECT id FROM profiles WHERE email = ?').bind(email).all();
+    
+    if (results.length === 0) {
+      // For security, don't reveal if email exists or not
+      return c.json({ ok: true, message: 'If that email exists, a magic link has been sent' });
+    }
+
+    // Generate a magic link token
+    const otpToken = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+    
+    // Store OTP token in database
+    await c.env.DATABASE.prepare(`
+      INSERT INTO otp_tokens (email, token, expires_at)
+      VALUES (?, ?, ?)
+    `).bind(email, otpToken, expiresAt).run();
+    
+    // TODO: In production, integrate with email service (SendGrid, Resend, etc.)
+    // For now, we'll return a mock success but token is stored in DB
+    console.log(`[send-otp] Magic link for ${email}: ${otpToken}`);
+    
+    // CRITICAL: Do NOT return the OTP token in production!
+    // The token should only be sent via email
+    return c.json({ ok: true, message: 'If that email exists, a magic link has been sent' });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// POST /verify-otp - verify magic link token and return JWT
+app.post('/verify-otp', async (c) => {
+  const body = await c.req.json();
+  const { email, token } = body;
+  if (!email || !token) {
+    return c.json({ error: 'Missing email or token' }, 400);
+  }
+
+  try {
+    // Check if user exists
+    const { results } = await c.env.DATABASE.prepare('SELECT id FROM profiles WHERE email = ?').bind(email).all();
+    
+    if (results.length === 0) {
+      // For security, don't reveal if email exists
+      return c.json({ ok: true, message: 'If that email exists, a magic link has been sent' });
+    }
+
+    // Validate OTP token from database
+    const now = new Date().toISOString();
+    const { results: otpResults } = await c.env.DATABASE.prepare(`
+      SELECT id, email, expires_at, used 
+      FROM otp_tokens 
+      WHERE email = ? AND token = ? AND used = 0 AND expires_at > ?
+      ORDER BY created_at DESC 
+      LIMIT 1
+    `).bind(email, token, now).all();
+    
+    if (otpResults.length === 0) {
+      return c.json({ error: 'Invalid or expired token' }, 401);
+    }
+
+    // Mark token as used
+    await c.env.DATABASE.prepare('UPDATE otp_tokens SET used = 1 WHERE id = ?').bind(otpResults[0].id).run();
+
+    const user = results[0] as any;
+    
+    // Generate JWT
+    const jwtToken = await jwtSign({ sub: user.id, email }, c.env.JWT_SECRET!, { exp: Math.floor(Date.now() / 1000) + 60*60*24*7 });
+
+    return c.json({ ok: true, token: jwtToken });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// POST /change-password - change user password
+app.post('/change-password', authMiddleware, requireUser, async (c) => {
+  const body = await c.req.json();
+  const { password } = body;
+  const userId = c.get('userId');
+  
+  if (!password) {
+    return c.json({ error: 'Missing password' }, 400);
+  }
+
+  try {
+    const passwordHash = await hashPassword(password);
+    await c.env.DATABASE.prepare('UPDATE profiles SET password_hash = ? WHERE id = ?').bind(passwordHash, userId).run();
+    
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// GET /mfa-status - check if user has MFA enabled
+app.get('/mfa-status', authMiddleware, requireUser, async (c) => {
+  const userId = c.get('userId');
+  
+  try {
+    const { results } = await c.env.DATABASE.prepare('SELECT mfa_enabled FROM profiles WHERE id = ?').bind(userId).all();
+    
+    if (results.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    const user = results[0] as any;
+    return c.json({ enabled: !!user.mfa_enabled });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// POST /mfa-enable - Enable TOTP MFA for the user
+app.post('/mfa-enable', authMiddleware, requireUser, async (c) => {
+  const userId = c.get('userId');
+  
+  try {
+    // Get user email for the secret
+    const { results: userResults } = await c.env.DATABASE.prepare('SELECT email FROM profiles WHERE id = ?').bind(userId).all();
+    if (userResults.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    const email = (userResults[0] as any).email;
+    
+    // Generate a random secret (base32 encoded)
+    const secret = generateBase32Secret();
+    
+    // Generate otpauth URL for QR code
+    const otpauthUrl = `otpauth://totp/CryoPay:${email}?secret=${secret}&issuer=CryoPay`;
+    
+    // Store the secret temporarily (not enabled yet until verified)
+    await c.env.DATABASE.prepare('UPDATE profiles SET mfa_secret = ? WHERE id = ?').bind(secret, userId).run();
+    
+    return c.json({ 
+      ok: true, 
+      secret, 
+      otpauthUrl,
+      message: 'Scan the QR code with your authenticator app, then verify with a code'
+    });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// POST /mfa-verify - Verify and enable TOTP MFA
+app.post('/mfa-verify', authMiddleware, requireUser, async (c) => {
+  const userId = c.get('userId');
+  const body = await c.req.json();
+  const { code } = body;
+  
+  if (!code) {
+    return c.json({ error: 'Missing verification code' }, 400);
+  }
+  
+  try {
+    // Get the stored secret
+    const { results } = await c.env.DATABASE.prepare('SELECT mfa_secret FROM profiles WHERE id = ?').bind(userId).all();
+    if (results.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    const secret = (results[0] as any).mfa_secret;
+    if (!secret) {
+      return c.json({ error: 'No MFA setup in progress. Call /mfa-enable first.' }, 400);
+    }
+    
+    // Verify the code against the secret
+    const isValid = await verifyTOTP(code, secret);
+    if (!isValid) {
+      return c.json({ error: 'Invalid verification code' }, 401);
+    }
+    
+    // Generate backup codes
+    const backupCodes = generateBackupCodes();
+    
+    // Enable MFA
+    await c.env.DATABASE.prepare('UPDATE profiles SET mfa_enabled = 1, mfa_secret = ?, mfa_backup_codes = ? WHERE id = ?')
+      .bind(secret, JSON.stringify(backupCodes), userId).run();
+    
+    return c.json({ 
+      ok: true, 
+      message: 'MFA enabled successfully',
+      backupCodes  // Return backup codes once
+    });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// POST /mfa-disable - Disable MFA (requires password)
+app.post('/mfa-disable', authMiddleware, requireUser, async (c) => {
+  const userId = c.get('userId');
+  const body = await c.req.json();
+  const { password } = body;
+  
+  if (!password) {
+    return c.json({ error: 'Password required to disable MFA' }, 400);
+  }
+  
+  try {
+    // Verify password
+    const { results } = await c.env.DATABASE.prepare('SELECT password_hash FROM profiles WHERE id = ?').bind(userId).all();
+    if (results.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    const isValid = await verifyPassword(password, (results[0] as any).password_hash);
+    if (!isValid) {
+      return c.json({ error: 'Invalid password' }, 401);
+    }
+    
+    // Disable MFA
+    await c.env.DATABASE.prepare('UPDATE profiles SET mfa_enabled = 0, mfa_secret = NULL, mfa_backup_codes = NULL WHERE id = ?')
+      .bind(userId).run();
+    
+    return c.json({ ok: true, message: 'MFA disabled successfully' });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// POST /mfa-login - Login with TOTP code (if MFA is enabled)
+app.post('/mfa-login', async (c) => {
+  const body = await c.req.json();
+  
+  // Validate input using Zod schema (note: schema uses mfa_code, body uses mfaCode)
+  const parseResult = MfaLoginInputSchema.safeParse({
+    email: body.email,
+    password: body.password,
+    mfa_code: body.mfaCode
+  });
+  if (!parseResult.success) {
+    return c.json({ ok: false, error: parseResult.error.message, code: ErrorCode.VALIDATION_ERROR }, HTTP_STATUS.BAD_REQUEST);
+  }
+  const { email, password, mfa_code: mfaCode } = parseResult.data;
+  
+  try {
+    // First verify credentials - include first_name and last_name in the query
+    const { results } = await c.env.DATABASE.prepare('SELECT id, email, first_name, last_name, password_hash, mfa_enabled, mfa_secret FROM profiles WHERE email = ?').bind(email).all();
+    if (results.length === 0) {
+      return c.json({ ok: false, error: 'Invalid credentials', code: ErrorCode.INVALID_CREDENTIALS }, HTTP_STATUS.UNAUTHORIZED);
+    }
+    
+    const user = results[0] as any;
+    const isValid = await verifyPassword(password, user.password_hash);
+    if (!isValid) {
+      return c.json({ ok: false, error: 'Invalid credentials', code: ErrorCode.INVALID_CREDENTIALS }, HTTP_STATUS.UNAUTHORIZED);
+    }
+    
+    // If MFA is enabled, verify the TOTP code
+    if (user.mfa_enabled && user.mfa_secret) {
+      const isMfaValid = await verifyTOTP(mfaCode, user.mfa_secret);
+      if (!isMfaValid) {
+        return c.json({ ok: false, error: 'Invalid MFA code', code: ErrorCode.MFA_INVALID }, HTTP_STATUS.UNAUTHORIZED);
+      }
+    }
+    
+    // Generate JWT
+    const token = await jwtSign({ sub: user.id, email }, c.env.JWT_SECRET!, { exp: Math.floor(Date.now() / 1000) + 60*60*24*7 });
+    
+    return c.json({ 
+      ok: true, 
+      token, 
+      user: {
+        id: user.id,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+      }
+    });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  }
+});
+
+// Helper: Generate base32 secret
+function generateBase32Secret(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let secret = '';
+  const randomValues = crypto.getRandomValues(new Uint8Array(16));
+  for (let i = 0; i < 16; i++) {
+    secret += chars[randomValues[i] % 32];
+  }
+  return secret;
+}
+
+// Helper: Generate backup codes
+function generateBackupCodes(): string[] {
+  const codes: string[] = [];
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  for (let i = 0; i < 10; i++) {
+    let code = '';
+    const randomValues = crypto.getRandomValues(new Uint8Array(8));
+    for (let j = 0; j < 8; j++) {
+      code += chars[randomValues[j] % 36];
+      if (j === 3) code += '-';
+    }
+    codes.push(code);
+  }
+  return codes;
+}
+
+// Helper: Verify TOTP code using HMAC-SHA1 (RFC 6238 compliant)
+async function verifyTOTP(code: string, secret: string): Promise<boolean> {
+  // Decode base32 secret
+  const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const cleanedSecret = secret.toUpperCase().replace(/[^A-Z2-7]/g, '');
+  
+  // Convert base32 to Uint8Array
+  let bits = '';
+  for (const char of cleanedSecret) {
+    const val = base32Chars.indexOf(char);
+    if (val === -1) return false;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  
+  const keyBytes: number[] = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    keyBytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  
+  const keyData = new Uint8Array(keyBytes);
+  
+  // Get current time step (30 second periods)
+  const timeStep = Math.floor(Date.now() / 1000 / 30);
+  
+  // Check current and adjacent time steps (for clock drift)
+  for (const offset of [-1, 0, 1]) {
+    let step = timeStep + offset;
+    const stepBytes = new Uint8Array(8);
+    for (let i = 7; i >= 0; i--) {
+      stepBytes[i] = step & 0xff;
+      step = Math.floor(step / 256);
+    }
+    
+    // Compute HMAC-SHA1
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-1' },
+      false,
+      ['sign']
+    );
+    const hmac = await crypto.subtle.sign('HMAC', cryptoKey, stepBytes);
+    const hmacBytes = new Uint8Array(hmac);
+    
+    // Dynamic truncation (RFC 4226)
+    const offsetBits = hmacBytes[hmacBytes.length - 1] & 0x0f;
+    const binary = 
+      ((hmacBytes[offsetBits] & 0x7f) << 24) |
+      ((hmacBytes[offsetBits + 1] & 0xff) << 16) |
+      ((hmacBytes[offsetBits + 2] & 0xff) << 8) |
+      (hmacBytes[offsetBits + 3] & 0xff);
+    
+    const expectedCode = (binary % 1000000).toString().padStart(6, '0');
+    if (expectedCode === code) {
+      return true;
+    }
+  }
+  
+  return false;
+}
 
 export default app;
 

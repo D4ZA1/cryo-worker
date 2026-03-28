@@ -6,20 +6,6 @@
  * Run `wrangler types` after binding changes.
  */
 
-export interface Profile {
-  id: string;
-  first_name?: string | null;
-  last_name?: string | null;
-  public_key?: string | null;
-  encrypted_private_key?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  password_hash?: string | null;
-  notifications: string;  // JSON
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Wallet {
   user_id: string;
   public_key?: string | null;
@@ -47,6 +33,32 @@ export interface Contact {
   email?: string | null;
   label?: string | null;
   public_key?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OtpToken {
+  id: number;
+  email: string;
+  token: string;
+  expires_at: string;
+  used: number; // 0/1
+  created_at: string;
+}
+
+export interface Profile {
+  id: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  public_key?: string | null;
+  encrypted_private_key?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  password_hash?: string | null;
+  notifications: string;  // JSON
+  mfa_enabled?: number; // 0/1
+  mfa_secret?: string | null;
+  mfa_backup_codes?: string | null; // JSON array
   created_at: string;
   updated_at: string;
 }

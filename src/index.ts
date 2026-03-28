@@ -6,6 +6,8 @@ import type { Env } from './db/schema';
 import authRoutes from './routes/auth';
 import profileRoutes from './routes/profile';
 import walletRoutes from './routes/wallet';
+import blocksRoutes from './routes/blocks';
+import contactsRoutes from './routes/contacts';
 import { authMiddleware } from './middleware/auth';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -32,6 +34,8 @@ app.get('/tables', async (c) => {
 app.route('/api/auth', authRoutes);
 app.route('/api/profile', profileRoutes);
 app.route('/api/wallet', walletRoutes);
+app.route('/api/blocks', blocksRoutes);
+app.route('/api/contacts', contactsRoutes);
 
 app.onError((err, c) => {
   console.error(err);

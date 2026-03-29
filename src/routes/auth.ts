@@ -3,6 +3,13 @@ import type { Env } from '../db/schema';
 import { authMiddleware, requireUser } from '../middleware/auth';
 import { RegisterInputSchema, LoginInputSchema, MfaLoginInputSchema } from '../schemas';
 import { ErrorCode, HTTP_STATUS, VALIDATION } from '../constants';
+import {
+  generateSignInMessage,
+  generateNonce,
+  verifyRequestSignature,
+  normalizeAddress,
+} from '../middleware/ethereum-auth';
+import { connectMetaMaskSchema } from '../schemas/blockchain';
 // Use WebCrypto for Workers compatibility
 // PBKDF2 with WebCrypto
 
@@ -488,6 +495,38 @@ function generateBackupCodes(): string[] {
   return codes;
 }
 
+// Helper: Generate JWT for MetaMask authentication (24-hour expiry)
+async function generateJWT(userId: string, secret: string): Promise<string> {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = btoa(JSON.stringify({
+    sub: userId,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hours
+  }));
+  
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(`${header}.${payload}`)
+  );
+  
+  const sig = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  
+  return `${header}.${payload}.${sig}`;
+}
+
 // Helper: Verify TOTP code using HMAC-SHA1 (RFC 6238 compliant)
 async function verifyTOTP(code: string, secret: string): Promise<boolean> {
   // Decode base32 secret
@@ -548,6 +587,320 @@ async function verifyTOTP(code: string, secret: string): Promise<boolean> {
   
   return false;
 }
+
+// ============ MetaMask Authentication Routes ============
+
+/**
+ * GET /api/auth/metamask/nonce
+ * Generate a nonce for MetaMask sign-in
+ */
+app.get('/metamask/nonce', async (c) => {
+  const address = c.req.query('address');
+
+  if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    return c.json({ error: 'Invalid Ethereum address' }, 400);
+  }
+
+  const nonce = generateNonce();
+  const message = generateSignInMessage(address, nonce, 'CryoPay');
+
+  // Store nonce temporarily (in production, use a proper cache)
+  // For now, we'll include it in the message and verify on return
+
+  return c.json({
+    success: true,
+    data: {
+      nonce,
+      message,
+      address: normalizeAddress(address),
+    },
+  });
+});
+
+/**
+ * POST /api/auth/metamask/connect
+ * Connect/register a MetaMask wallet
+ */
+app.post('/metamask/connect', async (c) => {
+  try {
+    const body = await c.req.json();
+
+    // Validate request
+    const parseResult = connectMetaMaskSchema.safeParse(body);
+    if (!parseResult.success) {
+      return c.json(
+        {
+          success: false,
+          error: 'Validation failed',
+          details: parseResult.error.issues,
+        },
+        400
+      );
+    }
+
+    const { address, signature, message } = parseResult.data;
+
+    // Verify the signature
+    const verification = await verifyRequestSignature({
+      address,
+      signature,
+      message,
+    });
+
+    if (!verification.valid) {
+      return c.json(
+        {
+          success: false,
+          error: 'Signature verification failed',
+          message: verification.error,
+        },
+        401
+      );
+    }
+
+    const normalizedAddress = normalizeAddress(address);
+
+    // Check if wallet is already registered
+    const { results: existingUser } = await c.env.DATABASE.prepare(
+      'SELECT id, ethereum_address FROM ethereum_users WHERE ethereum_address = ?'
+    ).bind(normalizedAddress).all();
+
+    if (existingUser && existingUser.length > 0) {
+      // Wallet already linked - generate JWT token
+      const userId = (existingUser[0] as any).id;
+
+      // Get profile info
+      const { results: profileResults } = await c.env.DATABASE.prepare(
+        'SELECT * FROM profiles WHERE id = ?'
+      ).bind(userId).all();
+
+      if (!profileResults || profileResults.length === 0) {
+        return c.json({ error: 'User profile not found' }, 404);
+      }
+
+      const profile = profileResults[0] as any;
+
+      // Generate JWT token (reuse existing token generation logic)
+      const token = await generateJWT(userId, c.env.JWT_SECRET);
+
+      return c.json({
+        success: true,
+        message: 'Wallet connected successfully',
+        data: {
+          token,
+          user: {
+            id: userId,
+            ethereumAddress: normalizedAddress,
+            email: profile.email,
+            firstName: profile.first_name,
+            lastName: profile.last_name,
+          },
+          isNewUser: false,
+        },
+      });
+    }
+
+    // New wallet - create user account
+    const userId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    // Create profile
+    await c.env.DATABASE.prepare(
+      `INSERT INTO profiles (id, email, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`
+    ).bind(userId, `${normalizedAddress}@wallet.cryopay`, now, now).run();
+
+    // Link Ethereum address
+    await c.env.DATABASE.prepare(
+      `INSERT INTO ethereum_users (id, ethereum_address, verified, created_at, updated_at)
+       VALUES (?, ?, 1, ?, ?)`
+    ).bind(userId, normalizedAddress, now, now).run();
+
+    // Generate JWT token
+    const token = await generateJWT(userId, c.env.JWT_SECRET);
+
+    return c.json({
+      success: true,
+      message: 'Wallet registered successfully',
+      data: {
+        token,
+        user: {
+          id: userId,
+          ethereumAddress: normalizedAddress,
+          email: `${normalizedAddress}@wallet.cryopay`,
+        },
+        isNewUser: true,
+      },
+    });
+  } catch (error) {
+    console.error('MetaMask connect error:', error);
+    return c.json(
+      {
+        success: false,
+        error: 'Failed to connect wallet',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      500
+    );
+  }
+});
+
+/**
+ * POST /api/auth/metamask/link
+ * Link a MetaMask wallet to an existing account (requires JWT auth)
+ */
+app.post('/metamask/link', authMiddleware, async (c) => {
+  try {
+    const body = await c.req.json();
+    const userId = c.get('userId');
+
+    // Validate request
+    const parseResult = connectMetaMaskSchema.safeParse(body);
+    if (!parseResult.success) {
+      return c.json(
+        {
+          success: false,
+          error: 'Validation failed',
+          details: parseResult.error.issues,
+        },
+        400
+      );
+    }
+
+    const { address, signature, message } = parseResult.data;
+
+    // Verify the signature
+    const verification = await verifyRequestSignature({
+      address,
+      signature,
+      message,
+    });
+
+    if (!verification.valid) {
+      return c.json(
+        {
+          success: false,
+          error: 'Signature verification failed',
+          message: verification.error,
+        },
+        401
+      );
+    }
+
+    const normalizedAddress = normalizeAddress(address);
+
+    // Check if wallet is already linked to another user
+    const { results: existingLink } = await c.env.DATABASE.prepare(
+      'SELECT id FROM ethereum_users WHERE ethereum_address = ?'
+    ).bind(normalizedAddress).all();
+
+    if (existingLink && existingLink.length > 0) {
+      const linkedUserId = (existingLink[0] as any).id;
+      if (linkedUserId !== userId) {
+        return c.json(
+          {
+            success: false,
+            error: 'Wallet already linked to another account',
+          },
+          409
+        );
+      }
+      // Already linked to this user
+      return c.json({
+        success: true,
+        message: 'Wallet already linked to your account',
+        data: {
+          ethereumAddress: normalizedAddress,
+        },
+      });
+    }
+
+    // Check if user already has a wallet linked
+    const { results: userWallet } = await c.env.DATABASE.prepare(
+      'SELECT ethereum_address FROM ethereum_users WHERE id = ?'
+    ).bind(userId).all();
+
+    const now = new Date().toISOString();
+
+    if (userWallet && userWallet.length > 0) {
+      // Update existing link
+      await c.env.DATABASE.prepare(
+        `UPDATE ethereum_users 
+         SET ethereum_address = ?, verified = 1, updated_at = ?
+         WHERE id = ?`
+      ).bind(normalizedAddress, now, userId).run();
+    } else {
+      // Create new link
+      await c.env.DATABASE.prepare(
+        `INSERT INTO ethereum_users (id, ethereum_address, verified, created_at, updated_at)
+         VALUES (?, ?, 1, ?, ?)`
+      ).bind(userId, normalizedAddress, now, now).run();
+    }
+
+    return c.json({
+      success: true,
+      message: 'Wallet linked successfully',
+      data: {
+        ethereumAddress: normalizedAddress,
+      },
+    });
+  } catch (error) {
+    console.error('MetaMask link error:', error);
+    return c.json(
+      {
+        success: false,
+        error: 'Failed to link wallet',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      500
+    );
+  }
+});
+
+/**
+ * GET /api/auth/metamask/status
+ * Get MetaMask wallet status for authenticated user
+ */
+app.get('/metamask/status', authMiddleware, async (c) => {
+  try {
+    const userId = c.get('userId');
+
+    const { results } = await c.env.DATABASE.prepare(
+      'SELECT * FROM ethereum_users WHERE id = ?'
+    ).bind(userId).all();
+
+    if (!results || results.length === 0) {
+      return c.json({
+        success: true,
+        data: {
+          linked: false,
+          ethereumAddress: null,
+        },
+      });
+    }
+
+    const wallet = results[0] as any;
+
+    return c.json({
+      success: true,
+      data: {
+        linked: true,
+        ethereumAddress: wallet.ethereum_address,
+        verified: wallet.verified === 1,
+        createdAt: wallet.created_at,
+      },
+    });
+  } catch (error) {
+    console.error('MetaMask status error:', error);
+    return c.json(
+      {
+        success: false,
+        error: 'Failed to get wallet status',
+      },
+      500
+    );
+  }
+});
 
 export default app;
 

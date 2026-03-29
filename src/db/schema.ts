@@ -67,4 +67,9 @@ export interface Profile {
 export interface Env {
   DATABASE: D1Database;
   JWT_SECRET: string;
+  // Ethereum configuration
+  ETHEREUM_RPC_URL: string;
+  ETHEREUM_CHAIN_ID: string;
+  ETHEREUM_NETWORK: string;
+  CRYOPAY_CONTRACT_ADDRESS?: string;
 }

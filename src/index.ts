@@ -10,6 +10,7 @@ import blocksRoutes from './routes/blocks';
 import contactsRoutes from './routes/contacts';
 import ethereumRoutes from './routes/ethereum';
 import blockchainRoutes from './routes/blockchain';
+import devRoutes from './routes/dev';
 import { authMiddleware } from './middleware/auth';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -40,6 +41,7 @@ app.route('/api/blocks', blocksRoutes);
 app.route('/api/contacts', contactsRoutes);
 app.route('/api/ethereum', ethereumRoutes);
 app.route('/api/blockchain', blockchainRoutes);
+app.route('/api/dev', devRoutes);
 
 app.onError((err, c) => {
   console.error(err);

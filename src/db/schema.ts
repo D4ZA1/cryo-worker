@@ -72,4 +72,5 @@ export interface Env {
   ETHEREUM_CHAIN_ID: string;
   ETHEREUM_NETWORK: string;
   CRYOPAY_CONTRACT_ADDRESS?: string;
+  ETHERSCAN_API_KEY: string;
 }

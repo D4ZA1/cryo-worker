@@ -22,6 +22,7 @@
     "CRYOPAY_CONTRACT_ADDRESS": "0x9a142DBc7dec674E7b6d8175FcE40aAf88aCE75A",
     "ETHEREUM_CHAIN_ID": "11155111",
     "ETHEREUM_NETWORK": "sepolia",
-    "ETHEREUM_RPC_URL": "https://eth-sepolia.g.alchemy.com/v2/ZZlyIcQv_r_QkgulXmSEQ"
+    "ETHEREUM_RPC_URL": "https://eth-sepolia.g.alchemy.com/v2/ZZlyIcQv_r_QkgulXmSEQ",
+    "ETHERSCAN_API_KEY": "CJWVQX248WYPR1AVKQKCYMEFFEFRSEYVX5"
   }
 }

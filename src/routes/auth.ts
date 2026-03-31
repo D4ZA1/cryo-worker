@@ -638,7 +638,7 @@ app.post('/metamask/connect', async (c) => {
       );
     }
 
-    const { address, signature, message } = parseResult.data;
+    const { address, signature, message, firstName, lastName } = parseResult.data;
 
     // Verify the signature
     const verification = await verifyRequestSignature({
@@ -668,6 +668,24 @@ app.post('/metamask/connect', async (c) => {
     if (existingUser && existingUser.length > 0) {
       // Wallet already linked - generate JWT token
       const userId = (existingUser[0] as any).id;
+
+      // Update profile with firstName/lastName if provided
+      if (firstName || lastName) {
+        const now = new Date().toISOString();
+        if (firstName && lastName) {
+          await c.env.DATABASE.prepare(
+            `UPDATE profiles SET first_name = ?, last_name = ?, updated_at = ? WHERE id = ?`
+          ).bind(firstName, lastName, now, userId).run();
+        } else if (firstName) {
+          await c.env.DATABASE.prepare(
+            `UPDATE profiles SET first_name = ?, updated_at = ? WHERE id = ?`
+          ).bind(firstName, now, userId).run();
+        } else if (lastName) {
+          await c.env.DATABASE.prepare(
+            `UPDATE profiles SET last_name = ?, updated_at = ? WHERE id = ?`
+          ).bind(lastName, now, userId).run();
+        }
+      }
 
       // Get profile info
       const { results: profileResults } = await c.env.DATABASE.prepare(
@@ -700,15 +718,71 @@ app.post('/metamask/connect', async (c) => {
       });
     }
 
+    // Check if a profile already exists with this wallet's email
+    // This handles the case where ethereum_users entry was deleted but profile still exists
+    const walletEmail = `${normalizedAddress}@wallet.cryopay`;
+    const { results: existingProfile } = await c.env.DATABASE.prepare(
+      'SELECT id, email, first_name, last_name FROM profiles WHERE email = ?'
+    ).bind(walletEmail).all();
+
+    if (existingProfile && existingProfile.length > 0) {
+      // Profile exists but ethereum_users entry is missing - recreate the link
+      const profile = existingProfile[0] as any;
+      const userId = profile.id;
+      const now = new Date().toISOString();
+
+      // Recreate ethereum_users entry
+      await c.env.DATABASE.prepare(
+        `INSERT INTO ethereum_users (id, ethereum_address, verified, created_at, updated_at)
+         VALUES (?, ?, 1, ?, ?)`
+      ).bind(userId, normalizedAddress, now, now).run();
+
+      // Update profile with firstName/lastName if provided
+      if (firstName || lastName) {
+        if (firstName && lastName) {
+          await c.env.DATABASE.prepare(
+            `UPDATE profiles SET first_name = ?, last_name = ?, updated_at = ? WHERE id = ?`
+          ).bind(firstName, lastName, now, userId).run();
+        } else if (firstName) {
+          await c.env.DATABASE.prepare(
+            `UPDATE profiles SET first_name = ?, updated_at = ? WHERE id = ?`
+          ).bind(firstName, now, userId).run();
+        } else if (lastName) {
+          await c.env.DATABASE.prepare(
+            `UPDATE profiles SET last_name = ?, updated_at = ? WHERE id = ?`
+          ).bind(lastName, now, userId).run();
+        }
+      }
+
+      // Generate JWT token
+      const token = await generateJWT(userId, c.env.JWT_SECRET);
+
+      return c.json({
+        success: true,
+        message: 'Wallet reconnected successfully',
+        data: {
+          token,
+          user: {
+            id: userId,
+            ethereumAddress: normalizedAddress,
+            email: profile.email,
+            firstName: firstName || profile.first_name,
+            lastName: lastName || profile.last_name,
+          },
+          isNewUser: false,
+        },
+      });
+    }
+
     // New wallet - create user account
     const userId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    // Create profile
+    // Create profile with firstName/lastName if provided
     await c.env.DATABASE.prepare(
-      `INSERT INTO profiles (id, email, created_at, updated_at)
-       VALUES (?, ?, ?, ?)`
-    ).bind(userId, `${normalizedAddress}@wallet.cryopay`, now, now).run();
+      `INSERT INTO profiles (id, email, first_name, last_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(userId, `${normalizedAddress}@wallet.cryopay`, firstName || null, lastName || null, now, now).run();
 
     // Link Ethereum address
     await c.env.DATABASE.prepare(
@@ -728,6 +802,8 @@ app.post('/metamask/connect', async (c) => {
           id: userId,
           ethereumAddress: normalizedAddress,
           email: `${normalizedAddress}@wallet.cryopay`,
+          firstName: firstName || null,
+          lastName: lastName || null,
         },
         isNewUser: true,
       },

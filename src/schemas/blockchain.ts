@@ -40,6 +40,8 @@ export const connectMetaMaskSchema = z.object({
   signature: hexStringSchema.min(132, 'Signature too short'), // Minimum valid signature length
   message: z.string().min(1, 'Message is required'),
   nonce: z.string().optional(),
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
 });
 
 /**

@@ -18,6 +18,7 @@ import {
   getTransactionStatusSchema,
   type RecordTransaction,
 } from '../schemas/blockchain';
+import { getTransactionHistory as getEtherscanHistory, type EtherscanTransaction } from '../lib/etherscan';
 
 const blockchain = new Hono<{ Bindings: Env; Variables: { userId: string; ethereumAuth?: { ethereumAddress: string } } }>();
 
@@ -503,6 +504,70 @@ blockchain.post('/sync', async (c) => {
       },
       500
     );
+  }
+});
+
+/**
+ * GET /api/blockchain/history
+ * Get real transaction history from Etherscan
+ */
+blockchain.get('/history', async (c) => {
+  try {
+    const userId = c.get('userId');
+    const limit = parseInt(c.req.query('limit') || '20', 10);
+    const page = parseInt(c.req.query('page') || '1', 10);
+
+    const { results: userResults } = await c.env.DATABASE.prepare(
+      'SELECT ethereum_address FROM ethereum_users WHERE id = ?'
+    ).bind(userId).all();
+
+    if (!userResults || userResults.length === 0) {
+      return c.json({ success: false, error: 'Ethereum wallet not linked' }, 400);
+    }
+
+    const userEthAddress = (userResults[0] as any).ethereum_address;
+
+    if (!c.env.ETHERSCAN_API_KEY) {
+      return c.json({ success: false, error: 'Etherscan API not configured' }, 503);
+    }
+
+    const chainId = parseInt(c.env.ETHEREUM_CHAIN_ID || '11155111', 10);
+
+    const transactions = await getEtherscanHistory(
+      userEthAddress,
+      chainId,
+      c.env.ETHERSCAN_API_KEY,
+      { page, offset: limit, sort: 'desc' }
+    );
+
+    const formattedTransactions = transactions.map((tx: EtherscanTransaction) => ({
+      tx_hash: tx.hash,
+      from_address: tx.from,
+      to_address: tx.to,
+      amount_wei: tx.value,
+      status: tx.isError === '0' ? 'confirmed' : 'failed',
+      block_number: parseInt(tx.blockNumber, 10),
+      gas_used: tx.gasUsed,
+      timestamp: new Date(parseInt(tx.timeStamp, 10) * 1000).toISOString(),
+      confirmations: parseInt(tx.confirmations, 10),
+    }));
+
+    return c.json({
+      success: true,
+      data: {
+        transactions: formattedTransactions,
+        address: userEthAddress,
+        chainId,
+        pagination: { page, limit, hasMore: transactions.length === limit },
+      },
+    });
+  } catch (error) {
+    console.error('Get transaction history error:', error);
+    return c.json({
+      success: false,
+      error: 'Failed to fetch transaction history',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    }, 500);
   }
 });
 

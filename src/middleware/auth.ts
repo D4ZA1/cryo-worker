@@ -1,5 +1,4 @@
 import { Context } from 'hono';
-import { jwt } from 'hono/jwt';
 import type { Env } from '../db/schema';
 import { ErrorCode, HTTP_STATUS } from '../constants';
 

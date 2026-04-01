@@ -131,6 +131,10 @@ app.get('/search', authMiddleware, requireUser, async (c) => {
       params = [`%"thumbprint": "${thumbprint}"%`];
     }
 
+    if (!query) {
+      return c.json({ ok: false, error: 'At least one search parameter (email, id, or thumbprint) is required', code: ErrorCode.VALIDATION_ERROR }, HTTP_STATUS.BAD_REQUEST);
+    }
+
     const { results } = await c.env.DATABASE.prepare(query).bind(...params).all();
 
     if (results.length === 0) {

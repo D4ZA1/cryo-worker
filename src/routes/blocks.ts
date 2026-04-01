@@ -15,9 +15,10 @@ app.get('/', authMiddleware, requireUser, async (c) => {
       SELECT id, data, previous_hash, hash, created_at, user_id
       FROM blocks 
       WHERE user_id = ?
+         OR json_extract(data, '$.public_summary.to_user_id') = ?
       ORDER BY created_at DESC
       LIMIT 100
-    `).bind(userId).all();
+    `).bind(userId, userId).all();
     
     // Parse the JSON data field for each block
     const blocks = (results || []).map((block: any) => ({

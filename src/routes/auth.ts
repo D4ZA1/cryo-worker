@@ -235,8 +235,7 @@ app.post('/verify-otp', async (c) => {
     const { results } = await c.env.DATABASE.prepare('SELECT id FROM profiles WHERE email = ?').bind(email).all();
     
     if (results.length === 0) {
-      // For security, don't reveal if email exists
-      return c.json({ ok: true, message: 'If that email exists, a magic link has been sent' });
+      return c.json({ ok: false, error: 'Invalid or expired token' }, 401);
     }
 
     // Validate OTP token from database

@@ -14,7 +14,6 @@ import {
   getChainId,
 } from '../lib/ethereum';
 import { CRYOPAY_CONTRACT_ABI, CONTRACT_ADDRESSES } from '../lib/smartContract';
-import { getBalanceSchema } from '../schemas/blockchain';
 
 const ethereum = new Hono<{ Bindings: Env }>();
 

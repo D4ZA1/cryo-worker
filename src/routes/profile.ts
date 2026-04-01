@@ -105,14 +105,29 @@ app.get('/search', authMiddleware, requireUser, async (c) => {
     let params: any[] = [];
 
     if (email) {
-      query = 'SELECT id, first_name, last_name, email, public_key FROM profiles WHERE email = ?';
+      query = `
+        SELECT p.id, p.first_name, p.last_name, p.email, p.public_key, e.ethereum_address
+        FROM profiles p
+        LEFT JOIN ethereum_users e ON e.profile_id = p.id
+        WHERE p.email = ?
+      `;
       params = [email];
     } else if (id) {
-      query = 'SELECT id, first_name, last_name, email, public_key FROM profiles WHERE id = ?';
+      query = `
+        SELECT p.id, p.first_name, p.last_name, p.email, p.public_key, e.ethereum_address
+        FROM profiles p
+        LEFT JOIN ethereum_users e ON e.profile_id = p.id
+        WHERE p.id = ?
+      `;
       params = [id];
     } else if (thumbprint) {
       // Search by public_key thumbprint (stored as JSON string)
-      query = "SELECT id, first_name, last_name, email, public_key FROM profiles WHERE public_key LIKE ?";
+      query = `
+        SELECT p.id, p.first_name, p.last_name, p.email, p.public_key, e.ethereum_address
+        FROM profiles p
+        LEFT JOIN ethereum_users e ON e.profile_id = p.id
+        WHERE p.public_key LIKE ?
+      `;
       params = [`%"thumbprint": "${thumbprint}"%`];
     }
 

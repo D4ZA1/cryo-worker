@@ -13,7 +13,7 @@ app.get('/', authMiddleware, requireUser, async (c) => {
   try {
     const { results } = await c.env.DATABASE.prepare(`
       SELECT id, user_id, contact_user_id, name, address, email, label, public_key, created_at, updated_at
-      FROM contacts 
+      // FROM contacts 
       WHERE user_id = ?
       ORDER BY name ASC
       LIMIT 100

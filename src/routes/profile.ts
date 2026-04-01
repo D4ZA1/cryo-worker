@@ -108,7 +108,7 @@ app.get('/search', authMiddleware, requireUser, async (c) => {
       query = `
         SELECT p.id, p.first_name, p.last_name, p.email, p.public_key, e.ethereum_address
         FROM profiles p
-        LEFT JOIN ethereum_users e ON e.profile_id = p.id
+        LEFT JOIN ethereum_users e ON e.id = p.id
         WHERE p.email = ?
       `;
       params = [email];
@@ -116,7 +116,7 @@ app.get('/search', authMiddleware, requireUser, async (c) => {
       query = `
         SELECT p.id, p.first_name, p.last_name, p.email, p.public_key, e.ethereum_address
         FROM profiles p
-        LEFT JOIN ethereum_users e ON e.profile_id = p.id
+        LEFT JOIN ethereum_users e ON e.id = p.id
         WHERE p.id = ?
       `;
       params = [id];
@@ -125,7 +125,7 @@ app.get('/search', authMiddleware, requireUser, async (c) => {
       query = `
         SELECT p.id, p.first_name, p.last_name, p.email, p.public_key, e.ethereum_address
         FROM profiles p
-        LEFT JOIN ethereum_users e ON e.profile_id = p.id
+        LEFT JOIN ethereum_users e ON e.id = p.id
         WHERE p.public_key LIKE ?
       `;
       params = [`%"thumbprint": "${thumbprint}"%`];
